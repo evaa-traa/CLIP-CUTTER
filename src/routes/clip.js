@@ -21,13 +21,13 @@ const router = express.Router();
 
 router.post('/', async (req, res) => {
   const startTime = Date.now();
-  const { url, start, end } = req.body;
+  const { url, start, end, referer } = req.body;
 
   try {
     // ── Step 1: URL validation ────────────────────────────
     logger.info('Clip request received', { ip: req.ip, url, start, end });
 
-    const urlCheck = await validateUrl(url);
+    const urlCheck = await validateUrl(url, referer);
     if (!urlCheck.ok) {
       logger.warn('URL validation failed', { url, reason: urlCheck.reason, ip: req.ip });
       return res.status(400).json({
@@ -47,7 +47,7 @@ router.post('/', async (req, res) => {
     }
 
     // ── Step 3: FFmpeg clipping ───────────────────────────
-    const clipResult = await cutClip(url, start, end);
+    const clipResult = await cutClip(url, start, end, referer);
     if (!clipResult.ok) {
       logger.error('FFmpeg clipping failed', { url, reason: clipResult.reason });
       return res.status(500).json({

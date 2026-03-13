@@ -29,9 +29,10 @@ let activeProcesses = 0;
  * @param {string} url      — validated direct media URL
  * @param {string} start    — start timestamp "HH:MM:SS"
  * @param {string} end      — end timestamp "HH:MM:SS"
+ * @param {string} [referer] — optional referer URL for CDN auth
  * @returns {Promise<{ok:boolean, filePath?:string, filename?:string, reason?:string}>}
  */
-function cutClip(url, start, end) {
+function cutClip(url, start, end, referer) {
   return new Promise((resolve) => {
     // ── Concurrency check ──────────────────────────────
     if (activeProcesses >= MAX_CONCURRENT) {
@@ -54,6 +55,8 @@ function cutClip(url, start, end) {
       '-to', end,
       // Input URL
       '-i', url,
+      // ── Referer header (many CDNs require this) ────
+      ...(referer ? ['-referer', referer, '-headers', `Origin: ${new URL(referer).origin}\r\n`] : []),
       // ── Sandboxing flags ──────────────────────────
       // Whitelist: only allow these protocols (no file!)
       '-protocol_whitelist', 'http,https,tcp,tls,crypto',

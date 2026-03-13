@@ -10,6 +10,9 @@ const TIMESTAMP_REGEX = /^\d{1,2}:\d{2}:\d{2}$/;
 // Dangerous keys that could be used for prototype pollution
 const POISONED_KEYS = ['__proto__', 'constructor', 'prototype'];
 
+// Control characters that can confuse parsers, bypass validators, or inject into logs
+const CONTROL_CHAR_REGEX = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
+
 /**
  * Validate the POST /clip request body.
  * Ensures url, start, end exist and are strings.
@@ -28,7 +31,7 @@ function validateClipInput(req, res, next) {
     }
   }
 
-  const { url, start, end } = req.body;
+  const { url, start, end, referer } = req.body;
 
   // ── Existence checks ────────────────────────────────────
   if (!url || !start || !end) {
@@ -51,6 +54,22 @@ function validateClipInput(req, res, next) {
     });
   }
 
+  // ── Referer validation (optional field) ──────────────────
+  if (referer !== undefined) {
+    if (typeof referer !== 'string') {
+      return res.status(400).json({ status: 'rejected', reason: 'Referer must be a string.' });
+    }
+    if (referer.length > 2048) {
+      return res.status(400).json({ status: 'rejected', reason: 'Referer URL too long.' });
+    }
+    if (referer && !/^https?:\/\//i.test(referer)) {
+      return res.status(400).json({ status: 'rejected', reason: 'Referer must be an HTTP/HTTPS URL.' });
+    }
+    if (CONTROL_CHAR_REGEX.test(referer)) {
+      return res.status(400).json({ status: 'rejected', reason: 'Referer contains invalid characters.' });
+    }
+  }
+
   // ── Length guards (prevent huge payloads) ────────────────
   if (url.length > 2048) {
     return res.status(400).json({
@@ -68,7 +87,6 @@ function validateClipInput(req, res, next) {
 
   // ── Block null bytes and control characters ──────────────
   // These can confuse parsers, bypass validators, or inject into logs
-  const CONTROL_CHAR_REGEX = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
   if (CONTROL_CHAR_REGEX.test(url) || CONTROL_CHAR_REGEX.test(start) || CONTROL_CHAR_REGEX.test(end)) {
     logger.warn('Control characters in input blocked', { ip: req.ip });
     return res.status(400).json({

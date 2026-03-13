@@ -583,6 +583,16 @@
           </div>
         </div>
 
+        <div class="form-group">
+          <label for="refererInput">Page URL <span style="color:var(--text-muted);font-weight:400">(optional — helps with CDN access)</span></label>
+          <input
+            id="refererInput"
+            type="url"
+            placeholder="https://example-site.com/video-page"
+          />
+          <div class="help-text">The website where you found the video. Many CDNs need this to serve the stream.</div>
+        </div>
+
         <button id="submitBtn" class="btn btn-primary" type="submit">
           Cut &amp; Download Clip
         </button>
@@ -663,6 +673,7 @@
     const urlInput   = document.getElementById('urlInput');
     const startInput = document.getElementById('startInput');
     const endInput   = document.getElementById('endInput');
+    const refInput   = document.getElementById('refererInput');
     const submitBtn  = document.getElementById('submitBtn');
     const statusEl   = document.getElementById('status');
     const statusTitle   = document.getElementById('statusTitle');
@@ -729,10 +740,11 @@
       );
 
       try {
+        const referer = refInput.value.trim() || undefined;
         const response = await fetch('/clip', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, start, end }),
+          body: JSON.stringify({ url, start, end, referer }),
         });
 
         if (!response.ok) {

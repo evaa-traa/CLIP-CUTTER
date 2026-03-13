@@ -282,14 +282,17 @@ function makeRequest(targetUrl, method, extraHeaders = {}) {
   });
 }
 
-function validateContentType(url) {
+function validateContentType(url, referer) {
   return new Promise(async (resolve) => {
     let redirectCount = 0;
     let currentUrl = url;
 
+    // Build referer header if provided
+    const refHeaders = referer ? { 'Referer': referer, 'Origin': new URL(referer).origin } : {};
+
     // Follow redirects manually (with SSRF checks)
     while (true) {
-      const result = await makeRequest(currentUrl, 'HEAD');
+      const result = await makeRequest(currentUrl, 'HEAD', refHeaders);
       if (!result.ok) return resolve(result);
 
       const { statusCode, headers } = result;
@@ -330,6 +333,7 @@ function validateContentType(url) {
 
       const getResult = await makeRequest(currentUrl, 'GET', {
         'Range': 'bytes=0-1023',  // Only fetch first 1 KB
+        ...refHeaders,
       });
 
       if (!getResult.ok) return resolve(getResult);
@@ -344,7 +348,7 @@ function validateContentType(url) {
         const dc = await validateDomain(np);
         if (!dc.ok) return resolve({ ok: false, reason: 'Redirect target is not allowed.' });
 
-        const getResult2 = await makeRequest(nextUrl, 'GET', { 'Range': 'bytes=0-1023' });
+        const getResult2 = await makeRequest(nextUrl, 'GET', { 'Range': 'bytes=0-1023', ...refHeaders });
         if (!getResult2.ok) return resolve(getResult2);
         if (getResult2.statusCode >= 200 && getResult2.statusCode < 400) {
           return resolve(validateResponse(getResult2.headers));
@@ -405,7 +409,7 @@ function validateResponse(headers) {
 }
 
 // ─── Orchestrator — run all checks in sequence ──────────────
-async function validateUrl(rawUrl) {
+async function validateUrl(rawUrl, referer) {
   // Step 1: format + extension
   const fmt = validateUrlFormat(rawUrl);
   if (!fmt.ok) {
@@ -421,7 +425,7 @@ async function validateUrl(rawUrl) {
   }
 
   // Step 3: HEAD — content-type, size, redirects
-  const ct = await validateContentType(rawUrl);
+  const ct = await validateContentType(rawUrl, referer);
   if (!ct.ok) {
     logger.warn('URL rejected (content-type)', { url: rawUrl, reason: ct.reason });
     return ct;
