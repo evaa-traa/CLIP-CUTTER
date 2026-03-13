@@ -617,19 +617,20 @@
       <div class="helper-panel" id="helperPanel">
         <div class="helper-content">
 
-          <h3>⚡ Quick way — Console Script</h3>
+          <h3>⚡ Quick way — Live Interceptor Script</h3>
           <div class="copy-script-area">
             <button class="copy-btn" id="copyScriptBtn" type="button">
-              📋 Copy URL Finder Script
+              📋 Copy Video Interceptor
             </button>
-            <div class="script-preview">// Scans page for .m3u8, .mp4, .webm, .ts video URLs...<br>// Paste this in the browser console on the video page</div>
+            <div class="script-preview">// Intercepts all network requests to catch .m3u8/.mp4 URLs in real-time<br>// Paste BEFORE clicking play — it watches for the video URL</div>
           </div>
           <ol class="steps">
-            <li>Click the <strong>"Copy URL Finder Script"</strong> button above</li>
-            <li>Go to the page that has your video playing</li>
-            <li>Press <kbd>F12</kbd> to open DevTools, then go to the <strong>Console</strong> tab</li>
-            <li>Paste the script (<kbd>Ctrl+V</kbd>) and press <kbd>Enter</kbd></li>
-            <li>A popup will show all detected video URLs — click OK to copy</li>
+            <li>Go to the video page (but <strong>don't play it yet</strong>)</li>
+            <li>Press <kbd>F12</kbd> → go to the <strong>Console</strong> tab</li>
+            <li>Click <strong>"Copy Video Interceptor"</strong> above, then paste (<kbd>Ctrl+V</kbd>) in the console and press <kbd>Enter</kbd></li>
+            <li>You'll see <strong>"🎬 Video interceptor active!"</strong> in the console</li>
+            <li>Now <strong>click play</strong> on the video — the script will catch the URL automatically</li>
+            <li>A popup will appear with the found URL — click OK to copy it</li>
             <li>Come back here and paste the URL</li>
           </ol>
 
@@ -637,12 +638,13 @@
 
           <h3>🛠 Manual way — Network Tab</h3>
           <ol class="steps">
-            <li>Open the page with the video in your browser</li>
+            <li><strong>Disable your ad blocker</strong> temporarily (it blocks video player resources)</li>
             <li>Press <kbd>F12</kbd> or <kbd>Ctrl+Shift+I</kbd> to open DevTools</li>
             <li>Go to the <strong>Network</strong> tab</li>
-            <li>In the filter box, type <kbd>.m3u8</kbd> or <kbd>.mp4</kbd></li>
-            <li>Play the video — you'll see requests appear</li>
-            <li>Right-click a request → <strong>Copy → Copy URL</strong></li>
+            <li>In the filter box, type <kbd>m3u8</kbd> (or click the <strong>Media</strong> filter button)</li>
+            <li>Now load/refresh the page and <strong>click play</strong> on the video</li>
+            <li>You'll see the <code>.m3u8</code> request appear in the list</li>
+            <li>Right-click it → <strong>Copy → Copy URL</strong></li>
             <li>Paste the URL here</li>
           </ol>
 
@@ -783,53 +785,97 @@
       helperPanel.classList.toggle('open');
     });
 
-    // ── Console script (URL finder) ─────────────────────────
-    // Runs entirely in the user's browser on the target page.
-    // Scans <video>, <source>, performance entries, etc.
-    // Zero backend calls — fully client-side.
+    // ── Live interceptor script ───────────────────────────────
+    // Monkey-patches fetch + XHR to catch video URLs in real-time.
+    // Also watches for dynamically added <video> elements.
+    // Runs entirely in the user's browser. Zero backend calls.
     const finderScript = `(function(){
+  if(window.__vidInterceptorActive){console.log('Already active!');return}
+  window.__vidInterceptorActive=true;
   var exts=['.m3u8','.mp4','.webm','.ts','.mpd'];
-  var found=new Set();
-  function check(s){
-    if(!s)return;
+  var found=[];
+  var reported=new Set();
+
+  function isVid(url){
     try{
-      var u=new URL(s,location.href);
-      for(var i=0;i<exts.length;i++){
-        if(u.pathname.toLowerCase().includes(exts[i])){found.add(u.href);return}
-      }
+      var u=new URL(url,location.href).pathname.toLowerCase();
+      for(var i=0;i<exts.length;i++){if(u.includes(exts[i]))return true}
     }catch(e){}
+    return false;
   }
-  // Scan <video> and <source>
+
+  function report(url,source){
+    try{url=new URL(url,location.href).href}catch(e){return}
+    if(reported.has(url))return;
+    reported.add(url);
+    found.push(url);
+    console.log('%c🎬 VIDEO URL FOUND ('+source+'):%c\\n'+url,
+      'color:#22c55e;font-weight:bold;font-size:14px',
+      'color:#8b5cf6;font-size:12px');
+    // Auto-popup after short delay to batch multiple finds
+    clearTimeout(window.__vidPopupTimer);
+    window.__vidPopupTimer=setTimeout(function(){
+      var msg='Found '+found.length+' video URL(s):\\n\\n';
+      found.forEach(function(u,i){msg+=(i+1)+'. '+u+'\\n\\n'});
+      msg+='Click OK to copy the first one.';
+      if(confirm(msg)){
+        try{navigator.clipboard.writeText(found[0]).then(function(){alert('Copied!')})}
+        catch(e){prompt('Copy this URL:',found[0])}
+      }
+    },1500);
+  }
+
+  // 1. Monkey-patch fetch
+  var origFetch=window.fetch;
+  window.fetch=function(){
+    var url=arguments[0];
+    if(typeof url==='string'&&isVid(url))report(url,'fetch');
+    else if(url&&url.url&&isVid(url.url))report(url.url,'fetch');
+    return origFetch.apply(this,arguments);
+  };
+
+  // 2. Monkey-patch XMLHttpRequest
+  var origOpen=XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open=function(method,url){
+    if(typeof url==='string'&&isVid(url))report(url,'XHR');
+    return origOpen.apply(this,arguments);
+  };
+
+  // 3. Watch for new <video>/<source> elements (MutationObserver)
+  var obs=new MutationObserver(function(muts){
+    muts.forEach(function(m){
+      m.addedNodes.forEach(function(n){
+        if(!n.querySelectorAll)return;
+        n.querySelectorAll('video,source,video source').forEach(function(el){
+          if(el.src&&isVid(el.src))report(el.src,'DOM');
+          if(el.currentSrc&&isVid(el.currentSrc))report(el.currentSrc,'DOM');
+        });
+        if(n.tagName==='VIDEO'||n.tagName==='SOURCE'){
+          if(n.src&&isVid(n.src))report(n.src,'DOM');
+        }
+      });
+    });
+  });
+  obs.observe(document.documentElement,{childList:true,subtree:true});
+
+  // 4. Also do a static scan of what's already on the page
   document.querySelectorAll('video').forEach(function(v){
-    check(v.src); check(v.currentSrc);
-    v.querySelectorAll('source').forEach(function(s){check(s.src)});
+    if(v.src&&isVid(v.src))report(v.src,'existing');
+    if(v.currentSrc&&isVid(v.currentSrc))report(v.currentSrc,'existing');
+    v.querySelectorAll('source').forEach(function(s){
+      if(s.src&&isVid(s.src))report(s.src,'existing');
+    });
   });
-  // Scan same-origin iframes
-  try{document.querySelectorAll('iframe').forEach(function(f){
-    try{f.contentDocument.querySelectorAll('video,source').forEach(function(v){
-      check(v.src);check(v.currentSrc);
-    })}catch(e){}
-  })}catch(e){}
-  // Scan network requests (performance entries)
   if(window.performance&&performance.getEntriesByType){
-    performance.getEntriesByType('resource').forEach(function(r){check(r.name)});
+    performance.getEntriesByType('resource').forEach(function(r){
+      if(isVid(r.name))report(r.name,'perf');
+    });
   }
-  // Scan <a> and <script> as fallback
-  document.querySelectorAll('a[href],script[src]').forEach(function(el){
-    check(el.href||el.src);
-  });
-  // Show results
-  var urls=Array.from(found);
-  if(urls.length===0){
-    alert('No video URLs found.\\nMake sure the video is playing, then try again.');
-    return;
-  }
-  var msg='Found '+urls.length+' video URL(s):\\n\\n';
-  urls.forEach(function(u,i){msg+=(i+1)+'. '+u+'\\n\\n'});
-  msg+='Click OK to copy the first URL.';
-  if(confirm(msg)){
-    try{navigator.clipboard.writeText(urls[0]).then(function(){alert('Copied!')})}catch(e){prompt('Copy this URL:',urls[0])}
-  }
+
+  console.log('%c🎬 Video interceptor active!%c\\nNow click play on the video. URLs will appear here automatically.',
+    'color:#8b5cf6;font-weight:bold;font-size:16px',
+    'color:#888;font-size:12px');
+  if(found.length===0)console.log('Waiting for video requests...');
 })()`;
 
     const copyBtn = document.getElementById('copyScriptBtn');
@@ -839,11 +885,10 @@
         copyBtn.textContent = '✓ Copied!';
         copyBtn.classList.add('copied');
         setTimeout(() => {
-          copyBtn.textContent = '📋 Copy URL Finder Script';
+          copyBtn.textContent = '📋 Copy Video Interceptor';
           copyBtn.classList.remove('copied');
         }, 2000);
       } catch {
-        // Fallback: select from a prompt
         prompt('Copy this script manually:', finderScript);
       }
     });
