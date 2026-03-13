@@ -1,0 +1,25 @@
+{
+  "name": "clip-cutter",
+  "version": "1.0.0",
+  "description": "Secure backend service to download short clips from direct video streams using FFmpeg.",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "node --watch src/app.js",
+    "test": "node tests/test.js"
+  },
+  "keywords": ["clip", "ffmpeg", "video", "stream", "hls"],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.3.1",
+    "helmet": "^8.1.0",
+    "uuid": "^13.0.0",
+    "winston": "^3.19.0"
+  }
+}

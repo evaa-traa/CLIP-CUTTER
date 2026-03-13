@@ -1,0 +1,8 @@
+node_modules/
+clips/
+logs/
+.env
+*.mp4
+*.webm
+*.ts
+!src/**/*.ts
