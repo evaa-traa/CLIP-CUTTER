@@ -37,6 +37,7 @@ COPY --from=deps /app/node_modules ./node_modules
 # Copy application source
 COPY package.json ./
 COPY src ./src
+COPY public ./public
 
 # Create output directories and set ownership
 RUN mkdir -p clips logs && chown -R clipcutter:clipcutter /app
