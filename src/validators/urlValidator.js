@@ -27,7 +27,7 @@ const BLOCKED_DOMAIN_KEYWORDS = [
 
 // ── Blocked URL path segments ───────────────────────────────
 const BLOCKED_PATH_SEGMENTS = [
-  '/movie/', '/download/', '/embed/', '/watch/',
+  '/movie/', '/embed/', '/watch/',
   '/series/', '/episode/',
 ];
 
