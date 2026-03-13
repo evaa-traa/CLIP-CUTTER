@@ -1,0 +1,19 @@
+# ─────────────────────────────────────────────────────────────
+# Render Blueprint — Infrastructure as Code
+# https://render.com/docs/blueprint-spec
+# ─────────────────────────────────────────────────────────────
+
+services:
+  - type: web
+    name: clip-cutter
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CORS_ORIGIN
+        value: "*"
+      - key: LOG_LEVEL
+        value: info

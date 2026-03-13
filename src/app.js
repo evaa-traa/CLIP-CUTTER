@@ -38,6 +38,17 @@ app.use(express.json({ limit: '1mb' }));
 app.set('trust proxy', 1);
 
 // ─── Routes ──────────────────────────────────────────────────
+app.get('/', (_req, res) => {
+  res.json({
+    service: 'clip-cutter',
+    version: '1.0.0',
+    endpoints: {
+      'GET  /':        'This info page',
+      'GET  /health':  'Health check (includes FFmpeg status)',
+      'POST /clip':    'Cut a clip — body: { url, start, end }',
+    },
+  });
+});
 app.use('/health', healthRoute);
 app.use('/clip', rateLimiter, validateClipInput, clipRoute);
 

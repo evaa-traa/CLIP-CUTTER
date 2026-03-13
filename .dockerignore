@@ -1,0 +1,12 @@
+node_modules
+clips
+logs
+.env
+.git
+.gitignore
+README.md
+tests
+*.mp4
+*.webm
+*.ts
+!src/**/*.ts
