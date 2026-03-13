@@ -379,44 +379,65 @@
       margin-top: 1.25rem;
     }
 
-    .bookmarklet-area {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      margin-bottom: 0.75rem;
+    .copy-script-area {
+      margin-bottom: 1rem;
     }
 
-    .bookmarklet-link {
+    .copy-btn {
       display: inline-flex;
       align-items: center;
-      gap: 0.4rem;
-      padding: 0.55rem 1rem;
+      gap: 0.5rem;
+      padding: 0.6rem 1.15rem;
       background: linear-gradient(135deg, #2563eb, #7c3aed);
       color: #fff;
       font-family: var(--font);
       font-size: 0.8rem;
       font-weight: 600;
+      border: none;
       border-radius: 6px;
-      text-decoration: none;
-      cursor: grab;
+      cursor: pointer;
       white-space: nowrap;
-      transition: all 0.2s;
+      transition: all 0.25s;
       box-shadow: 0 2px 12px rgba(37,99,235,0.3);
     }
 
-    .bookmarklet-link:hover {
+    .copy-btn:hover {
       transform: translateY(-1px);
       box-shadow: 0 4px 16px rgba(37,99,235,0.4);
     }
 
-    .bookmarklet-link:active {
-      cursor: grabbing;
+    .copy-btn:active {
+      transform: translateY(0);
     }
 
-    .bookmarklet-hint {
-      font-size: 0.75rem;
+    .copy-btn.copied {
+      background: linear-gradient(135deg, #16a34a, #15803d);
+      box-shadow: 0 2px 12px rgba(22,163,74,0.3);
+    }
+
+    .script-preview {
+      margin-top: 0.6rem;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.6rem 0.8rem;
+      font-family: 'SF Mono', 'Consolas', 'Courier New', monospace;
+      font-size: 0.68rem;
       color: var(--text-muted);
-      line-height: 1.4;
+      line-height: 1.5;
+      max-height: 60px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .script-preview::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 24px;
+      background: linear-gradient(transparent, rgba(0,0,0,0.5));
     }
 
     .steps {
@@ -596,24 +617,25 @@
       <div class="helper-panel" id="helperPanel">
         <div class="helper-content">
 
-          <h3>⚡ Quick way — Bookmarklet</h3>
-          <div class="bookmarklet-area">
-            <a class="bookmarklet-link" id="bookmarkletLink" href="#" title="Drag this to your bookmarks bar">
-              🎬 Find Video URL
-            </a>
-            <span class="bookmarklet-hint">Drag this button to your<br>bookmarks bar</span>
+          <h3>⚡ Quick way — Console Script</h3>
+          <div class="copy-script-area">
+            <button class="copy-btn" id="copyScriptBtn" type="button">
+              📋 Copy URL Finder Script
+            </button>
+            <div class="script-preview">// Scans page for .m3u8, .mp4, .webm, .ts video URLs...<br>// Paste this in the browser console on the video page</div>
           </div>
           <ol class="steps">
-            <li>Drag the button above to your browser's bookmarks bar</li>
-            <li>Go to any page with a video playing</li>
-            <li>Click the <strong>"Find Video URL"</strong> bookmark</li>
-            <li>It will scan the page and show all detected video URLs</li>
-            <li>Click any found URL to copy it, then paste it here</li>
+            <li>Click the <strong>"Copy URL Finder Script"</strong> button above</li>
+            <li>Go to the page that has your video playing</li>
+            <li>Press <kbd>F12</kbd> to open DevTools, then go to the <strong>Console</strong> tab</li>
+            <li>Paste the script (<kbd>Ctrl+V</kbd>) and press <kbd>Enter</kbd></li>
+            <li>A popup will show all detected video URLs — click OK to copy</li>
+            <li>Come back here and paste the URL</li>
           </ol>
 
           <div class="or-divider">or</div>
 
-          <h3>🛠 Manual way — DevTools</h3>
+          <h3>🛠 Manual way — Network Tab</h3>
           <ol class="steps">
             <li>Open the page with the video in your browser</li>
             <li>Press <kbd>F12</kbd> or <kbd>Ctrl+Shift+I</kbd> to open DevTools</li>
@@ -761,42 +783,70 @@
       helperPanel.classList.toggle('open');
     });
 
-    // ── Bookmarklet code ────────────────────────────────────
-    // This runs entirely in the USER's browser on the target page.
-    // It scans for <video>, <source>, and performance resource entries
-    // to find .m3u8, .mp4, .webm, .ts URLs. Zero backend calls.
-    const bookmarkletCode = `javascript:void(function(){
-      var e=['.m3u8','.mp4','.webm','.ts','.mpd'],
-          u=new Set(),
-          add=function(s){
-            if(!s)return;
-            try{var p=new URL(s,location.href);for(var i=0;i<e.length;i++){if(p.pathname.toLowerCase().indexOf(e[i])!==-1){u.add(p.href);return}}}catch(x){}
-          };
-      /* Scan <video> and <source> elements */
-      document.querySelectorAll('video').forEach(function(v){
-        add(v.src); add(v.currentSrc);
-        v.querySelectorAll('source').forEach(function(s){add(s.src)});
-      });
-      /* Scan iframes (same-origin only) */
-      try{document.querySelectorAll('iframe').forEach(function(f){
-        try{f.contentDocument.querySelectorAll('video,source').forEach(function(v){add(v.src);add(v.currentSrc)})}catch(x){}
-      })}catch(x){}
-      /* Scan performance entries (network requests) */
-      if(window.performance&&performance.getEntriesByType){
-        performance.getEntriesByType('resource').forEach(function(r){add(r.name)});
+    // ── Console script (URL finder) ─────────────────────────
+    // Runs entirely in the user's browser on the target page.
+    // Scans <video>, <source>, performance entries, etc.
+    // Zero backend calls — fully client-side.
+    const finderScript = `(function(){
+  var exts=['.m3u8','.mp4','.webm','.ts','.mpd'];
+  var found=new Set();
+  function check(s){
+    if(!s)return;
+    try{
+      var u=new URL(s,location.href);
+      for(var i=0;i<exts.length;i++){
+        if(u.pathname.toLowerCase().includes(exts[i])){found.add(u.href);return}
       }
-      /* Scan all <a> hrefs and <script> srcs as fallback */
-      document.querySelectorAll('a[href],script[src]').forEach(function(el){add(el.href||el.src)});
-      /* Display results */
-      var urls=Array.from(u);
-      if(urls.length===0){alert('No video URLs found on this page.\\n\\nTry:\\n1. Make sure the video is playing\\n2. Use DevTools Network tab (F12) to find it manually');return}
-      var msg='Found '+urls.length+' video URL(s):\\n\\n';
-      urls.forEach(function(url,i){msg+=(i+1)+'. '+url+'\\n\\n'});
-      msg+='Click OK to copy the first URL.';
-      if(confirm(msg)){try{navigator.clipboard.writeText(urls[0]).then(function(){alert('Copied to clipboard!')})}catch(x){prompt('Copy this URL:',urls[0])}}
-    }())`;
+    }catch(e){}
+  }
+  // Scan <video> and <source>
+  document.querySelectorAll('video').forEach(function(v){
+    check(v.src); check(v.currentSrc);
+    v.querySelectorAll('source').forEach(function(s){check(s.src)});
+  });
+  // Scan same-origin iframes
+  try{document.querySelectorAll('iframe').forEach(function(f){
+    try{f.contentDocument.querySelectorAll('video,source').forEach(function(v){
+      check(v.src);check(v.currentSrc);
+    })}catch(e){}
+  })}catch(e){}
+  // Scan network requests (performance entries)
+  if(window.performance&&performance.getEntriesByType){
+    performance.getEntriesByType('resource').forEach(function(r){check(r.name)});
+  }
+  // Scan <a> and <script> as fallback
+  document.querySelectorAll('a[href],script[src]').forEach(function(el){
+    check(el.href||el.src);
+  });
+  // Show results
+  var urls=Array.from(found);
+  if(urls.length===0){
+    alert('No video URLs found.\\nMake sure the video is playing, then try again.');
+    return;
+  }
+  var msg='Found '+urls.length+' video URL(s):\\n\\n';
+  urls.forEach(function(u,i){msg+=(i+1)+'. '+u+'\\n\\n'});
+  msg+='Click OK to copy the first URL.';
+  if(confirm(msg)){
+    try{navigator.clipboard.writeText(urls[0]).then(function(){alert('Copied!')})}catch(e){prompt('Copy this URL:',urls[0])}
+  }
+})()`;
 
-    document.getElementById('bookmarkletLink').href = bookmarkletCode;
+    const copyBtn = document.getElementById('copyScriptBtn');
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(finderScript);
+        copyBtn.textContent = '✓ Copied!';
+        copyBtn.classList.add('copied');
+        setTimeout(() => {
+          copyBtn.textContent = '📋 Copy URL Finder Script';
+          copyBtn.classList.remove('copied');
+        }, 2000);
+      } catch {
+        // Fallback: select from a prompt
+        prompt('Copy this script manually:', finderScript);
+      }
+    });
   </script>
 
 </body>

@@ -19,6 +19,10 @@ if (!fs.existsSync(config.OUTPUT_DIR)) {
   fs.mkdirSync(config.OUTPUT_DIR, { recursive: true });
 }
 
+// ── Concurrency limiter (prevent resource exhaustion) ────────
+const MAX_CONCURRENT = 3;
+let activeProcesses = 0;
+
 /**
  * Cut a clip from a remote stream using FFmpeg.
  *
@@ -29,10 +33,20 @@ if (!fs.existsSync(config.OUTPUT_DIR)) {
  */
 function cutClip(url, start, end) {
   return new Promise((resolve) => {
+    // ── Concurrency check ──────────────────────────────
+    if (activeProcesses >= MAX_CONCURRENT) {
+      logger.warn('FFmpeg concurrency limit reached', { active: activeProcesses });
+      return resolve({ ok: false, reason: 'Server is busy. Please try again in a moment.' });
+    }
+    activeProcesses++;
+
     const filename = `${uuidv4()}.mp4`;
     const outputPath = path.join(config.OUTPUT_DIR, filename);
 
-    // ── Build FFmpeg args ─────────────────────────────────
+    // Sanitize URL for logging (strip control chars that could mess up logs)
+    const safeLogUrl = url.replace(/[\x00-\x1f\x7f]/g, '?');
+
+    // ── Build FFmpeg args ─────────────────────────────
     const args = [
       // Seek to start BEFORE input (fast seek)
       '-ss', start,
@@ -40,13 +54,23 @@ function cutClip(url, start, end) {
       '-to', end,
       // Input URL
       '-i', url,
-      // ── Sandboxing flags ──────────────────────────────
-      // Disable all network-based protocols except http(s)/hls/tcp/tls
-      '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+      // ── Sandboxing flags ──────────────────────────
+      // Whitelist: only allow these protocols (no file!)
+      '-protocol_whitelist', 'http,https,tcp,tls,crypto',
+      // Blacklist: explicitly block dangerous protocols as belt-and-suspenders
+      '-protocol_blacklist', 'concat,data,file,subfile,pipe,cache,fd,gopher,ftp,rtp,srtp,udp',
       // Limit input streams to avoid abuse
       '-max_streams', '10',
+      // Only copy video + audio streams (reject subtitles, data, attachments
+      // which could carry malware payloads)
+      '-map', '0:v?',
+      '-map', '0:a?',
+      '-dn',            // disable data streams
+      '-sn',            // disable subtitle streams
       // Copy codecs (no re-encode → fast)
       '-c', 'copy',
+      // FFmpeg-native file size limit (belt-and-suspenders with polling monitor)
+      '-fs', String(config.MAX_FILE_SIZE_BYTES),
       // Force overwrite
       '-y',
       // Disable interactive prompts
@@ -57,7 +81,7 @@ function cutClip(url, start, end) {
       outputPath,
     ];
 
-    logger.info('FFmpeg starting', { url, start, end, filename });
+    logger.info('FFmpeg starting', { url: safeLogUrl, start, end, filename });
 
     const ffmpeg = spawn(config.FFMPEG_PATH, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -90,8 +114,29 @@ function cutClip(url, start, end) {
       resolve({ ok: false, reason: 'FFmpeg execution timed out.' });
     }, config.FFMPEG_TIMEOUT_MS);
 
+    // ── Output file size monitor (prevent disk-filling) ────
+    const sizeCheckInterval = setInterval(() => {
+      try {
+        const stats = fs.statSync(outputPath);
+        if (stats.size > config.MAX_FILE_SIZE_BYTES) {
+          logger.error('Output file too large, killing FFmpeg', {
+            filename,
+            sizeBytes: stats.size,
+            limitBytes: config.MAX_FILE_SIZE_BYTES,
+          });
+          ffmpeg.kill('SIGKILL');
+          clearInterval(sizeCheckInterval);
+          clearTimeout(timeout);
+          try { fs.unlinkSync(outputPath); } catch { /* ignore */ }
+          resolve({ ok: false, reason: 'Output file exceeded size limit.' });
+        }
+      } catch { /* file doesn't exist yet, ignore */ }
+    }, 2000); // check every 2 seconds
+
     ffmpeg.on('close', (code) => {
       clearTimeout(timeout);
+      clearInterval(sizeCheckInterval);
+      activeProcesses--;
 
       if (code !== 0) {
         logger.error('FFmpeg exited with error', { code, stderr: stderr.slice(0, 500) });
@@ -124,10 +169,12 @@ function cutClip(url, start, end) {
 
     ffmpeg.on('error', (err) => {
       clearTimeout(timeout);
+      clearInterval(sizeCheckInterval);
+      activeProcesses--;
       logger.error('FFmpeg spawn error', { error: err.message });
       resolve({
         ok: false,
-        reason: `Could not start FFmpeg: ${err.message}`,
+        reason: 'Could not start FFmpeg.',
       });
     });
   });

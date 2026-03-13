@@ -31,6 +31,18 @@ const BLOCKED_PATH_SEGMENTS = [
   '/series/', '/episode/',
 ];
 
+// ── Cloud metadata hostnames (SSRF targets) ─────────────────
+const CLOUD_METADATA_HOSTS = [
+  'metadata.google.internal',
+  'metadata.google',
+  'kubernetes.default.svc',
+  'kubernetes.default',
+];
+
+// ── Characters that FFmpeg interprets specially ─────────────
+// Pipe = concat protocol, backtick/semicolon = shell injection if misused
+const DANGEROUS_URL_CHARS = /[|`;&$(){}\[\]!#]/;
+
 // ── Private IP ranges (SSRF prevention) ─────────────────────
 const PRIVATE_IP_RANGES = [
   { start: '10.0.0.0',     end: '10.255.255.255' },
@@ -45,7 +57,10 @@ function ipToLong(ip) {
   return ip.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0;
 }
 
-function isPrivateIp(ip) {
+/**
+ * Check if an IPv4 address is private/internal.
+ */
+function isPrivateIPv4(ip) {
   if (!net.isIPv4(ip)) return false;
   const ipLong = ipToLong(ip);
   return PRIVATE_IP_RANGES.some(
@@ -53,8 +68,54 @@ function isPrivateIp(ip) {
   );
 }
 
+/**
+ * Check if an IPv6 address is private/internal.
+ * Covers: loopback (::1), link-local (fe80::), unique-local (fc00::/fd00::),
+ * IPv4-mapped (::ffff:x.x.x.x), and IPv4-compatible (::x.x.x.x).
+ */
+function isPrivateIPv6(ip) {
+  if (!net.isIPv6(ip)) return false;
+  const lower = ip.toLowerCase().replace(/^\[|\]$/g, '');
+
+  // Loopback
+  if (lower === '::1' || lower === '0:0:0:0:0:0:0:1') return true;
+  // Unspecified
+  if (lower === '::' || lower === '0:0:0:0:0:0:0:0') return true;
+  // Link-local
+  if (lower.startsWith('fe80:')) return true;
+  // Unique-local
+  if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
+
+  // IPv4-mapped IPv6 (::ffff:10.0.0.1)
+  const v4Mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (v4Mapped && isPrivateIPv4(v4Mapped[1])) return true;
+
+  // IPv4-compatible IPv6 (::10.0.0.1)
+  const v4Compat = lower.match(/^::(\d+\.\d+\.\d+\.\d+)$/);
+  if (v4Compat && isPrivateIPv4(v4Compat[1])) return true;
+
+  return false;
+}
+
+/**
+ * Check if any IP (v4 or v6) is private.
+ */
+function isPrivateIp(ip) {
+  return isPrivateIPv4(ip) || isPrivateIPv6(ip);
+}
+
 // ─── 1. Basic URL syntax + extension check ──────────────────
 function validateUrlFormat(rawUrl) {
+  // Block null bytes (parser confusion attacks)
+  if (rawUrl.includes('\0') || rawUrl.includes('%00')) {
+    return { ok: false, reason: 'URL contains invalid characters.' };
+  }
+
+  // Block FFmpeg-dangerous characters (concat protocol, shell chars)
+  if (DANGEROUS_URL_CHARS.test(rawUrl)) {
+    return { ok: false, reason: 'URL contains disallowed characters.' };
+  }
+
   let parsed;
   try {
     parsed = new URL(rawUrl);
@@ -67,12 +128,22 @@ function validateUrlFormat(rawUrl) {
     return { ok: false, reason: 'Only HTTP/HTTPS URLs are allowed.' };
   }
 
+  // Block URLs with embedded credentials (user:pass@host)
+  if (parsed.username || parsed.password) {
+    return { ok: false, reason: 'URLs with credentials are not allowed.' };
+  }
+
+  // Block punycode / IDN homograph attacks (e.g. xn--ggle-55da.com masking as google.com)
+  if (parsed.hostname.startsWith('xn--') || parsed.hostname.includes('.xn--')) {
+    return { ok: false, reason: 'Internationalized domain names are not allowed.' };
+  }
+
   // Extract extension (ignore query string)
   const ext = path.extname(parsed.pathname).toLowerCase();
   if (!config.ALLOWED_EXTENSIONS.includes(ext)) {
     return {
       ok: false,
-      reason: `File extension "${ext || '(none)'}" is not allowed. Allowed: ${config.ALLOWED_EXTENSIONS.join(', ')}`,
+      reason: `File extension not allowed. Supported: ${config.ALLOWED_EXTENSIONS.join(', ')}`,
     };
   }
 
@@ -83,28 +154,31 @@ function validateUrlFormat(rawUrl) {
 async function validateDomain(parsed) {
   const hostname = parsed.hostname.toLowerCase();
 
-  // Reject raw IPs that are private
-  if (net.isIPv4(hostname) || net.isIPv6(hostname)) {
-    if (net.isIPv4(hostname) && isPrivateIp(hostname)) {
-      return { ok: false, reason: 'Private/internal IP addresses are not allowed.' };
-    }
-    if (hostname === '::1' || hostname === '0:0:0:0:0:0:0:1') {
-      return { ok: false, reason: 'Loopback addresses are not allowed.' };
-    }
+  // Reject raw IPs that are private (v4 + v6)
+  if (net.isIPv4(hostname) && isPrivateIp(hostname)) {
+    return { ok: false, reason: 'URL not allowed — target address is restricted.' };
+  }
+  if (net.isIPv6(hostname) && isPrivateIp(hostname)) {
+    return { ok: false, reason: 'URL not allowed — target address is restricted.' };
   }
 
   // Reject localhost variants
-  if (hostname === 'localhost' || hostname.endsWith('.local')) {
-    return { ok: false, reason: 'localhost is not allowed.' };
+  if (hostname === 'localhost' || hostname.endsWith('.local') || hostname.endsWith('.localhost')) {
+    return { ok: false, reason: 'URL not allowed — target address is restricted.' };
+  }
+
+  // Reject cloud metadata endpoints (AWS/GCP/Azure/k8s)
+  for (const metaHost of CLOUD_METADATA_HOSTS) {
+    if (hostname === metaHost || hostname.endsWith('.' + metaHost)) {
+      logger.warn('Cloud metadata SSRF blocked', { hostname });
+      return { ok: false, reason: 'URL not allowed — target address is restricted.' };
+    }
   }
 
   // Reject known piracy / streaming site domains
   for (const keyword of BLOCKED_DOMAIN_KEYWORDS) {
     if (hostname.includes(keyword)) {
-      return {
-        ok: false,
-        reason: `Domain contains blocked keyword: "${keyword}".`,
-      };
+      return { ok: false, reason: 'This domain is not allowed.' };
     }
   }
 
@@ -112,34 +186,40 @@ async function validateDomain(parsed) {
   const lowerPath = parsed.pathname.toLowerCase();
   for (const segment of BLOCKED_PATH_SEGMENTS) {
     if (lowerPath.includes(segment)) {
-      return {
-        ok: false,
-        reason: `URL path contains blocked segment: "${segment}".`,
-      };
+      return { ok: false, reason: 'This URL path is not allowed.' };
     }
   }
 
-  // DNS resolution check — make sure resolved IPs are not private
+  // DNS resolution check — make sure ALL resolved IPs (v4 + v6) are not private
   try {
-    const addresses = await new Promise((resolve, reject) => {
-      dns.resolve4(hostname, (err, addrs) => {
-        if (err) reject(err);
-        else resolve(addrs);
-      });
-    });
+    // Resolve both A and AAAA records
+    const [v4Addrs, v6Addrs] = await Promise.all([
+      new Promise((resolve) => {
+        dns.resolve4(hostname, (err, addrs) => resolve(err ? [] : addrs));
+      }),
+      new Promise((resolve) => {
+        dns.resolve6(hostname, (err, addrs) => resolve(err ? [] : addrs));
+      }),
+    ]);
 
-    for (const addr of addresses) {
+    const allAddrs = [...v4Addrs, ...v6Addrs];
+
+    if (allAddrs.length === 0 && !net.isIPv4(hostname) && !net.isIPv6(hostname)) {
+      return { ok: false, reason: 'DNS resolution failed.' };
+    }
+
+    for (const addr of allAddrs) {
       if (isPrivateIp(addr)) {
+        logger.warn('SSRF blocked: domain resolves to private IP', { hostname, addr });
         return {
           ok: false,
-          reason: `Domain resolves to private IP (${addr}). SSRF blocked.`,
+          reason: 'URL not allowed — target address is restricted.',
         };
       }
     }
   } catch (dnsErr) {
-    // If DNS resolution fails, we still allow if hostname is an IP
-    if (!net.isIPv4(hostname)) {
-      return { ok: false, reason: `DNS resolution failed for "${hostname}".` };
+    if (!net.isIPv4(hostname) && !net.isIPv6(hostname)) {
+      return { ok: false, reason: 'DNS resolution failed.' };
     }
   }
 
@@ -151,12 +231,17 @@ function validateContentType(url) {
   return new Promise((resolve) => {
     let redirectCount = 0;
 
-    function doHead(targetUrl) {
+    async function doHead(targetUrl) {
       let parsed;
       try {
         parsed = new URL(targetUrl);
       } catch {
         return resolve({ ok: false, reason: 'Invalid URL during redirect.' });
+      }
+
+      // Only allow http/https (prevent protocol downgrade in redirects)
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        return resolve({ ok: false, reason: 'Only HTTP/HTTPS URLs are allowed.' });
       }
 
       const transport = parsed.protocol === 'https:' ? https : http;
@@ -171,7 +256,7 @@ function validateContentType(url) {
             'User-Agent': 'ClipCutter/1.0 (Validator)',
           },
         },
-        (res) => {
+        async (res) => {
           // ── Handle redirects ────────────────────────────
           if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
             redirectCount++;
@@ -187,6 +272,20 @@ function validateContentType(url) {
             }
             // Resolve relative redirects
             const nextUrl = new URL(location, targetUrl).href;
+
+            // ── SSRF CHECK ON REDIRECT TARGET ─────────────
+            let nextParsed;
+            try {
+              nextParsed = new URL(nextUrl);
+            } catch {
+              return resolve({ ok: false, reason: 'Invalid redirect URL.' });
+            }
+            const redirectDomCheck = await validateDomain(nextParsed);
+            if (!redirectDomCheck.ok) {
+              logger.warn('Redirect SSRF blocked', { from: targetUrl, to: nextUrl });
+              return resolve({ ok: false, reason: 'Redirect target is not allowed.' });
+            }
+
             return doHead(nextUrl);
           }
 
@@ -229,7 +328,7 @@ function validateContentType(url) {
           if (!isNaN(contentLength) && contentLength > config.MAX_FILE_SIZE_BYTES) {
             return resolve({
               ok: false,
-              reason: `File size (~${(contentLength / 1024 / 1024).toFixed(1)} MB) exceeds the ${config.MAX_FILE_SIZE_BYTES / 1024 / 1024} MB limit.`,
+              reason: `File too large. Maximum allowed is ${config.MAX_FILE_SIZE_BYTES / 1024 / 1024} MB.`,
             });
           }
 
@@ -243,7 +342,8 @@ function validateContentType(url) {
       });
 
       req.on('error', (err) => {
-        resolve({ ok: false, reason: `HEAD request failed: ${err.message}` });
+        logger.warn('HEAD request error', { url: targetUrl, error: err.message });
+        resolve({ ok: false, reason: 'Could not reach the URL.' });
       });
 
       req.end();

@@ -4,11 +4,30 @@
 
 const logger = require('../utils/logger');
 
+// Strict HH:MM:SS format — only digits and colons
+const TIMESTAMP_REGEX = /^\d{1,2}:\d{2}:\d{2}$/;
+
+// Dangerous keys that could be used for prototype pollution
+const POISONED_KEYS = ['__proto__', 'constructor', 'prototype'];
+
 /**
  * Validate the POST /clip request body.
  * Ensures url, start, end exist and are strings.
  */
 function validateClipInput(req, res, next) {
+  // ── Prototype pollution guard ──────────────────────────────
+  if (req.body && typeof req.body === 'object') {
+    for (const key of Object.keys(req.body)) {
+      if (POISONED_KEYS.includes(key)) {
+        logger.warn('Prototype pollution attempt blocked', { ip: req.ip, key });
+        return res.status(400).json({
+          status: 'rejected',
+          reason: 'Invalid request body.',
+        });
+      }
+    }
+  }
+
   const { url, start, end } = req.body;
 
   // ── Existence checks ────────────────────────────────────
@@ -47,7 +66,27 @@ function validateClipInput(req, res, next) {
     });
   }
 
+  // ── Block null bytes and control characters ──────────────
+  // These can confuse parsers, bypass validators, or inject into logs
+  const CONTROL_CHAR_REGEX = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
+  if (CONTROL_CHAR_REGEX.test(url) || CONTROL_CHAR_REGEX.test(start) || CONTROL_CHAR_REGEX.test(end)) {
+    logger.warn('Control characters in input blocked', { ip: req.ip });
+    return res.status(400).json({
+      status: 'rejected',
+      reason: 'Input contains invalid characters.',
+    });
+  }
+
+  // ── Strict timestamp format (prevent injection via start/end) ─
+  if (!TIMESTAMP_REGEX.test(start) || !TIMESTAMP_REGEX.test(end)) {
+    return res.status(400).json({
+      status: 'rejected',
+      reason: 'Timestamps must be in HH:MM:SS format.',
+    });
+  }
+
   next();
 }
 
 module.exports = validateClipInput;
+

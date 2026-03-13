@@ -37,9 +37,18 @@ const config = {
   // ── Blocked MIME types ────────────────────────────────────
   BLOCKED_CONTENT_TYPES: [
     'text/html',
+    'text/xml',
     'application/javascript',
     'application/json',
+    'application/xml',
     'text/javascript',
+    'application/x-httpd-php',
+    'application/x-sh',
+    'application/x-executable',
+    'application/x-msdos-program',
+    'application/x-msdownload',
+    'application/java-archive',
+    'application/x-shockwave-flash',
   ],
 
   // ── Allowed file extensions ───────────────────────────────
