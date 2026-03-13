@@ -32,6 +32,7 @@ const config = {
     'video/mp4',
     'video/webm',
     'video/mp2t',
+    'video/x-matroska',
   ],
 
   // ── Blocked MIME types ────────────────────────────────────
@@ -52,7 +53,7 @@ const config = {
   ],
 
   // ── Allowed file extensions ───────────────────────────────
-  ALLOWED_EXTENSIONS: ['.m3u8', '.mp4', '.webm', '.ts'],
+  ALLOWED_EXTENSIONS: ['.m3u8', '.mp4', '.webm', '.ts', '.mkv'],
 
   // ── Output directory ──────────────────────────────────────
   OUTPUT_DIR: path.resolve(__dirname, '..', '..', 'clips'),

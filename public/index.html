@@ -658,6 +658,26 @@
             <li>Paste the URL here</li>
           </ol>
 
+          <div class="or-divider">or</div>
+
+          <h3>🎬 IP-locked streams? — Browser Recorder</h3>
+          <p style="color:var(--text-muted);font-size:0.85rem;margin:0 0 12px">Some CDNs lock streams to your IP. This script records the video <strong>directly in your browser</strong> — no server needed, works with any playing video.</p>
+          <div class="copy-script-area">
+            <button class="copy-btn" id="copyRecorderBtn" type="button">
+              📋 Copy Browser Recorder
+            </button>
+            <div class="script-preview">// Records the playing video element directly in your browser<br>// Seeks to your start time, records for the duration, auto-downloads</div>
+          </div>
+          <ol class="steps">
+            <li>Go to the video page and <strong>start playing</strong> the video</li>
+            <li>Press <kbd>F12</kbd> → <strong>Console</strong> tab</li>
+            <li>Click <strong>"Copy Browser Recorder"</strong> above → paste in console → Enter</li>
+            <li>Enter your <strong>start time</strong> and <strong>end time</strong> when prompted</li>
+            <li>The video will seek and start recording automatically</li>
+            <li>Wait for a <strong>"Recording complete!"</strong> message → clip auto-downloads</li>
+          </ol>
+          <p style="color:var(--text-muted);font-size:0.8rem;margin:8px 0 0"><strong>Note:</strong> Records in real-time (21s clip = 21s wait). Quality is good but re-encoded as WebM.</p>
+
         </div>
       </div>
     </div>
@@ -948,6 +968,137 @@
         }, 2000);
       } catch {
         prompt('Copy this script manually:', finderScript);
+      }
+    });
+
+    // ── Browser recorder script ──────────────────────────────
+    // Records the video element directly in the browser.
+    // Works with IP-locked CDNs because it uses the user's IP.
+    const recorderScript = `(function(){
+  var video=document.querySelector('video');
+  if(!video){
+    // Try inside iframes
+    try{document.querySelectorAll('iframe').forEach(function(f){
+      try{var v=f.contentDocument.querySelector('video');if(v)video=v}catch(e){}
+    })}catch(e){}
+  }
+  if(!video){alert('No video element found! Make sure the video is playing.');return}
+
+  var startStr=prompt('Enter START time (HH:MM:SS):','00:00:00');
+  if(!startStr)return;
+  var endStr=prompt('Enter END time (HH:MM:SS):','00:00:30');
+  if(!endStr)return;
+
+  function timeToSec(t){
+    var p=t.split(':').map(Number);
+    if(p.length===3)return p[0]*3600+p[1]*60+p[2];
+    if(p.length===2)return p[0]*60+p[1];
+    return p[0];
+  }
+
+  var startSec=timeToSec(startStr);
+  var endSec=timeToSec(endStr);
+  var durationMs=(endSec-startSec)*1000;
+
+  if(durationMs<=0){alert('End time must be after start time!');return}
+  if(durationMs>300000){alert('Maximum recording is 5 minutes.');return}
+
+  console.log('%c\ud83c\udfac Browser Recorder','color:#8b5cf6;font-weight:bold;font-size:16px');
+  console.log('Start: '+startStr+' | End: '+endStr+' | Duration: '+(durationMs/1000)+'s');
+
+  // Try captureStream first, fall back to getDisplayMedia
+  function startRecording(stream){
+    var mimeType='video/webm;codecs=vp9,opus';
+    if(!MediaRecorder.isTypeSupported(mimeType)){
+      mimeType='video/webm;codecs=vp8,opus';
+      if(!MediaRecorder.isTypeSupported(mimeType)){
+        mimeType='video/webm';
+      }
+    }
+    var recorder=new MediaRecorder(stream,{mimeType:mimeType});
+    var chunks=[];
+    recorder.ondataavailable=function(e){if(e.data.size>0)chunks.push(e.data)};
+    recorder.onstop=function(){
+      stream.getTracks().forEach(function(t){t.stop()});
+      var blob=new Blob(chunks,{type:mimeType});
+      var url=URL.createObjectURL(blob);
+      var a=document.createElement('a');
+      a.href=url;
+      a.download='clip_'+startStr.replace(/:/g,'-')+'_to_'+endStr.replace(/:/g,'-')+'.webm';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function(){URL.revokeObjectURL(url)},5000);
+      console.log('%c\u2705 Recording complete! Clip downloaded.','color:#22c55e;font-weight:bold;font-size:14px');
+      console.log('File size: '+(blob.size/1024/1024).toFixed(2)+' MB');
+    };
+    video.play();
+    recorder.start(1000);
+    console.log('%c\u23fa\ufe0f Recording... ('+Math.round(durationMs/1000)+'s remaining)','color:#ef4444;font-weight:bold;font-size:14px');
+    
+    var remaining=Math.round(durationMs/1000);
+    var countdown=setInterval(function(){
+      remaining--;
+      if(remaining>0&&remaining%5===0)console.log(remaining+'s remaining...');
+    },1000);
+    
+    setTimeout(function(){
+      clearInterval(countdown);
+      recorder.stop();
+      video.pause();
+    },durationMs);
+  }
+
+  // Seek to start time then begin recording
+  console.log('Seeking to '+startStr+'...');
+  video.currentTime=startSec;
+
+  function onSeeked(){
+    video.removeEventListener('seeked',onSeeked);
+    // Try captureStream (best quality, no permission needed)
+    try{
+      var stream=video.captureStream?video.captureStream():video.mozCaptureStream();
+      if(stream&&stream.getTracks().length>0){
+        console.log('Using captureStream (best quality)');
+        startRecording(stream);
+        return;
+      }
+    }catch(e){
+      console.log('captureStream not available: '+e.message);
+    }
+    // Fallback: getDisplayMedia (requires permission but always works)
+    console.log('Falling back to screen capture. Please select this tab when prompted.');
+    navigator.mediaDevices.getDisplayMedia({
+      video:{displaySurface:'browser'},
+      audio:true,
+      preferCurrentTab:true
+    }).then(function(stream){
+      startRecording(stream);
+    }).catch(function(e){
+      alert('Screen capture denied. Cannot record.');
+      console.error(e);
+    });
+  }
+
+  if(Math.abs(video.currentTime-startSec)<1){
+    onSeeked();
+  }else{
+    video.addEventListener('seeked',onSeeked);
+  }
+})()`;
+
+    const copyRecBtn = document.getElementById('copyRecorderBtn');
+    copyRecBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(recorderScript);
+        copyRecBtn.textContent = '✓ Copied!';
+        copyRecBtn.classList.add('copied');
+        setTimeout(() => {
+          copyRecBtn.textContent = '📋 Copy Browser Recorder';
+          copyRecBtn.classList.remove('copied');
+        }, 2000);
+      } catch {
+        prompt('Copy this script manually:', recorderScript);
       }
     });
   </script>
