@@ -309,6 +309,177 @@
       letter-spacing: 0.3px;
     }
 
+    /* ─── Helper Section ────────────────────────────────────── */
+    .helper {
+      margin-top: 1.5rem;
+      animation: fadeUp 0.6s ease 0.25s both;
+    }
+
+    .helper-toggle {
+      width: 100%;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.85rem 1.25rem;
+      color: var(--text-secondary);
+      font-family: var(--font);
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      transition: all 0.25s;
+    }
+
+    .helper-toggle:hover {
+      background: var(--bg-card-hover);
+      color: var(--text-primary);
+    }
+
+    .helper-toggle .chevron {
+      transition: transform 0.3s;
+      font-size: 0.7rem;
+    }
+
+    .helper-toggle.open .chevron {
+      transform: rotate(180deg);
+    }
+
+    .helper-panel {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.4s ease, opacity 0.3s ease;
+      opacity: 0;
+    }
+
+    .helper-panel.open {
+      max-height: 800px;
+      opacity: 1;
+    }
+
+    .helper-content {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 var(--radius) var(--radius);
+      padding: 1.25rem;
+    }
+
+    .helper-content h3 {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .helper-content h3:not(:first-child) {
+      margin-top: 1.25rem;
+    }
+
+    .bookmarklet-area {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .bookmarklet-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.55rem 1rem;
+      background: linear-gradient(135deg, #2563eb, #7c3aed);
+      color: #fff;
+      font-family: var(--font);
+      font-size: 0.8rem;
+      font-weight: 600;
+      border-radius: 6px;
+      text-decoration: none;
+      cursor: grab;
+      white-space: nowrap;
+      transition: all 0.2s;
+      box-shadow: 0 2px 12px rgba(37,99,235,0.3);
+    }
+
+    .bookmarklet-link:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 16px rgba(37,99,235,0.4);
+    }
+
+    .bookmarklet-link:active {
+      cursor: grabbing;
+    }
+
+    .bookmarklet-hint {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    .steps {
+      list-style: none;
+      counter-reset: step;
+    }
+
+    .steps li {
+      counter-increment: step;
+      position: relative;
+      padding-left: 2rem;
+      margin-bottom: 0.6rem;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .steps li::before {
+      content: counter(step);
+      position: absolute;
+      left: 0;
+      top: 0.1rem;
+      width: 1.3rem;
+      height: 1.3rem;
+      background: rgba(139,92,246,0.15);
+      color: var(--accent);
+      border-radius: 50%;
+      font-size: 0.65rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .steps kbd {
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 4px;
+      padding: 0.1rem 0.4rem;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      font-size: 0.72rem;
+      color: var(--text-primary);
+    }
+
+    .or-divider {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin: 1rem 0;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .or-divider::before,
+    .or-divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
     /* ─── Animations ────────────────────────────────────────── */
     @keyframes fadeDown {
       from { opacity: 0; transform: translateY(-12px); }
@@ -335,6 +506,7 @@
       .container { padding: 1.5rem 1rem; }
       .card { padding: 1.25rem; }
       .time-row { grid-template-columns: 1fr; }
+      .bookmarklet-area { flex-direction: column; align-items: flex-start; }
     }
   </style>
 </head>
@@ -413,6 +585,47 @@
       <span class="info-badge">Max 90s clips</span>
       <span class="info-badge">No re-encoding</span>
       <span class="info-badge">Auto-cleanup</span>
+    </div>
+
+    <!-- Helper: How to find video URL -->
+    <div class="helper">
+      <button class="helper-toggle" id="helperToggle" type="button">
+        <span>🔍 How do I find the video URL?</span>
+        <span class="chevron">▼</span>
+      </button>
+      <div class="helper-panel" id="helperPanel">
+        <div class="helper-content">
+
+          <h3>⚡ Quick way — Bookmarklet</h3>
+          <div class="bookmarklet-area">
+            <a class="bookmarklet-link" id="bookmarkletLink" href="#" title="Drag this to your bookmarks bar">
+              🎬 Find Video URL
+            </a>
+            <span class="bookmarklet-hint">Drag this button to your<br>bookmarks bar</span>
+          </div>
+          <ol class="steps">
+            <li>Drag the button above to your browser's bookmarks bar</li>
+            <li>Go to any page with a video playing</li>
+            <li>Click the <strong>"Find Video URL"</strong> bookmark</li>
+            <li>It will scan the page and show all detected video URLs</li>
+            <li>Click any found URL to copy it, then paste it here</li>
+          </ol>
+
+          <div class="or-divider">or</div>
+
+          <h3>🛠 Manual way — DevTools</h3>
+          <ol class="steps">
+            <li>Open the page with the video in your browser</li>
+            <li>Press <kbd>F12</kbd> or <kbd>Ctrl+Shift+I</kbd> to open DevTools</li>
+            <li>Go to the <strong>Network</strong> tab</li>
+            <li>In the filter box, type <kbd>.m3u8</kbd> or <kbd>.mp4</kbd></li>
+            <li>Play the video — you'll see requests appear</li>
+            <li>Right-click a request → <strong>Copy → Copy URL</strong></li>
+            <li>Paste the URL here</li>
+          </ol>
+
+        </div>
+      </div>
     </div>
 
     <div class="footer">
@@ -538,6 +751,52 @@
         setLoading(false);
       }
     });
+
+    // ── Helper panel toggle ──────────────────────────────────
+    const helperToggle = document.getElementById('helperToggle');
+    const helperPanel  = document.getElementById('helperPanel');
+
+    helperToggle.addEventListener('click', () => {
+      helperToggle.classList.toggle('open');
+      helperPanel.classList.toggle('open');
+    });
+
+    // ── Bookmarklet code ────────────────────────────────────
+    // This runs entirely in the USER's browser on the target page.
+    // It scans for <video>, <source>, and performance resource entries
+    // to find .m3u8, .mp4, .webm, .ts URLs. Zero backend calls.
+    const bookmarkletCode = `javascript:void(function(){
+      var e=['.m3u8','.mp4','.webm','.ts','.mpd'],
+          u=new Set(),
+          add=function(s){
+            if(!s)return;
+            try{var p=new URL(s,location.href);for(var i=0;i<e.length;i++){if(p.pathname.toLowerCase().indexOf(e[i])!==-1){u.add(p.href);return}}}catch(x){}
+          };
+      /* Scan <video> and <source> elements */
+      document.querySelectorAll('video').forEach(function(v){
+        add(v.src); add(v.currentSrc);
+        v.querySelectorAll('source').forEach(function(s){add(s.src)});
+      });
+      /* Scan iframes (same-origin only) */
+      try{document.querySelectorAll('iframe').forEach(function(f){
+        try{f.contentDocument.querySelectorAll('video,source').forEach(function(v){add(v.src);add(v.currentSrc)})}catch(x){}
+      })}catch(x){}
+      /* Scan performance entries (network requests) */
+      if(window.performance&&performance.getEntriesByType){
+        performance.getEntriesByType('resource').forEach(function(r){add(r.name)});
+      }
+      /* Scan all <a> hrefs and <script> srcs as fallback */
+      document.querySelectorAll('a[href],script[src]').forEach(function(el){add(el.href||el.src)});
+      /* Display results */
+      var urls=Array.from(u);
+      if(urls.length===0){alert('No video URLs found on this page.\\n\\nTry:\\n1. Make sure the video is playing\\n2. Use DevTools Network tab (F12) to find it manually');return}
+      var msg='Found '+urls.length+' video URL(s):\\n\\n';
+      urls.forEach(function(url,i){msg+=(i+1)+'. '+url+'\\n\\n'});
+      msg+='Click OK to copy the first URL.';
+      if(confirm(msg)){try{navigator.clipboard.writeText(urls[0]).then(function(){alert('Copied to clipboard!')})}catch(x){prompt('Copy this URL:',urls[0])}}
+    }())`;
+
+    document.getElementById('bookmarkletLink').href = bookmarkletCode;
   </script>
 
 </body>
