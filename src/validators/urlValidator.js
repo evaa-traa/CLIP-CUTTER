@@ -226,131 +226,182 @@ async function validateDomain(parsed) {
   return { ok: true };
 }
 
-// ─── 3. HEAD request — MIME type + size + redirect check ────
-function validateContentType(url) {
+// ─── 3. Content validation via HEAD with GET fallback ───────
+// Many streaming CDNs don't support HEAD (return 404/405).
+// We fall back to a partial GET (Range: bytes=0-1023) which
+// most servers handle correctly.
+// ─────────────────────────────────────────────────────────────
+
+function makeRequest(targetUrl, method, extraHeaders = {}) {
   return new Promise((resolve) => {
-    let redirectCount = 0;
-
-    async function doHead(targetUrl) {
-      let parsed;
-      try {
-        parsed = new URL(targetUrl);
-      } catch {
-        return resolve({ ok: false, reason: 'Invalid URL during redirect.' });
-      }
-
-      // Only allow http/https (prevent protocol downgrade in redirects)
-      if (!['http:', 'https:'].includes(parsed.protocol)) {
-        return resolve({ ok: false, reason: 'Only HTTP/HTTPS URLs are allowed.' });
-      }
-
-      const transport = parsed.protocol === 'https:' ? https : http;
-
-      const req = transport.request(
-        targetUrl,
-        {
-          method: 'HEAD',
-          timeout: config.HEAD_REQUEST_TIMEOUT_MS,
-          // Disable auto-follow so we count redirects manually
-          headers: {
-            'User-Agent': 'ClipCutter/1.0 (Validator)',
-          },
-        },
-        async (res) => {
-          // ── Handle redirects ────────────────────────────
-          if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
-            redirectCount++;
-            if (redirectCount > config.MAX_REDIRECTS) {
-              return resolve({
-                ok: false,
-                reason: `Too many redirects (>${config.MAX_REDIRECTS}).`,
-              });
-            }
-            const location = res.headers.location;
-            if (!location) {
-              return resolve({ ok: false, reason: 'Redirect without Location header.' });
-            }
-            // Resolve relative redirects
-            const nextUrl = new URL(location, targetUrl).href;
-
-            // ── SSRF CHECK ON REDIRECT TARGET ─────────────
-            let nextParsed;
-            try {
-              nextParsed = new URL(nextUrl);
-            } catch {
-              return resolve({ ok: false, reason: 'Invalid redirect URL.' });
-            }
-            const redirectDomCheck = await validateDomain(nextParsed);
-            if (!redirectDomCheck.ok) {
-              logger.warn('Redirect SSRF blocked', { from: targetUrl, to: nextUrl });
-              return resolve({ ok: false, reason: 'Redirect target is not allowed.' });
-            }
-
-            return doHead(nextUrl);
-          }
-
-          if (res.statusCode < 200 || res.statusCode >= 400) {
-            return resolve({
-              ok: false,
-              reason: `HEAD request returned status ${res.statusCode}.`,
-            });
-          }
-
-          // ── Content-Type check ──────────────────────────
-          const rawCT = (res.headers['content-type'] || '').toLowerCase();
-          const contentType = rawCT.split(';')[0].trim();
-
-          // Block explicit bad types
-          for (const blocked of config.BLOCKED_CONTENT_TYPES) {
-            if (contentType.startsWith(blocked)) {
-              return resolve({
-                ok: false,
-                reason: `Content-Type "${contentType}" is not a video stream. This looks like a website page.`,
-              });
-            }
-          }
-
-          // Must match at least one allowed type
-          const isAllowed = config.ALLOWED_CONTENT_TYPES.some(
-            (allowed) => contentType.startsWith(allowed)
-          );
-
-          // For .m3u8 some servers return text/plain, we allow that specifically
-          if (!isAllowed && contentType !== 'text/plain' && contentType !== 'application/octet-stream' && contentType !== 'binary/octet-stream') {
-            return resolve({
-              ok: false,
-              reason: `Content-Type "${contentType}" is not in the allowed list.`,
-            });
-          }
-
-          // ── File-size check ─────────────────────────────
-          const contentLength = parseInt(res.headers['content-length'], 10);
-          if (!isNaN(contentLength) && contentLength > config.MAX_FILE_SIZE_BYTES) {
-            return resolve({
-              ok: false,
-              reason: `File too large. Maximum allowed is ${config.MAX_FILE_SIZE_BYTES / 1024 / 1024} MB.`,
-            });
-          }
-
-          resolve({ ok: true, contentType, contentLength });
-        }
-      );
-
-      req.on('timeout', () => {
-        req.destroy();
-        resolve({ ok: false, reason: 'HEAD request timed out.' });
-      });
-
-      req.on('error', (err) => {
-        logger.warn('HEAD request error', { url: targetUrl, error: err.message });
-        resolve({ ok: false, reason: 'Could not reach the URL.' });
-      });
-
-      req.end();
+    let parsed;
+    try {
+      parsed = new URL(targetUrl);
+    } catch {
+      return resolve({ ok: false, reason: 'Invalid URL.' });
     }
 
-    doHead(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return resolve({ ok: false, reason: 'Only HTTP/HTTPS URLs are allowed.' });
+    }
+
+    const transport = parsed.protocol === 'https:' ? https : http;
+
+    const req = transport.request(
+      targetUrl,
+      {
+        method,
+        timeout: config.HEAD_REQUEST_TIMEOUT_MS,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          ...extraHeaders,
+        },
+      },
+      (res) => {
+        // Consume the body to free up the socket
+        res.resume();
+        resolve({
+          ok: true,
+          statusCode: res.statusCode,
+          headers: res.headers,
+        });
+      }
+    );
+
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ ok: false, reason: 'Request timed out.' });
+    });
+
+    req.on('error', (err) => {
+      logger.warn('Request error', { url: targetUrl, method, error: err.message });
+      resolve({ ok: false, reason: 'Could not reach the URL.' });
+    });
+
+    req.end();
   });
+}
+
+function validateContentType(url) {
+  return new Promise(async (resolve) => {
+    let redirectCount = 0;
+    let currentUrl = url;
+
+    // Follow redirects manually (with SSRF checks)
+    while (true) {
+      const result = await makeRequest(currentUrl, 'HEAD');
+      if (!result.ok) return resolve(result);
+
+      const { statusCode, headers } = result;
+
+      // Handle redirects
+      if ([301, 302, 303, 307, 308].includes(statusCode)) {
+        redirectCount++;
+        if (redirectCount > config.MAX_REDIRECTS) {
+          return resolve({ ok: false, reason: 'Too many redirects.' });
+        }
+        const location = headers.location;
+        if (!location) {
+          return resolve({ ok: false, reason: 'Redirect without Location header.' });
+        }
+        const nextUrl = new URL(location, currentUrl).href;
+
+        // SSRF check on redirect target
+        let nextParsed;
+        try { nextParsed = new URL(nextUrl); } catch {
+          return resolve({ ok: false, reason: 'Invalid redirect URL.' });
+        }
+        const redirectDomCheck = await validateDomain(nextParsed);
+        if (!redirectDomCheck.ok) {
+          logger.warn('Redirect SSRF blocked', { from: currentUrl, to: nextUrl });
+          return resolve({ ok: false, reason: 'Redirect target is not allowed.' });
+        }
+        currentUrl = nextUrl;
+        continue;
+      }
+
+      // HEAD succeeded — validate the response
+      if (statusCode >= 200 && statusCode < 400) {
+        return resolve(validateResponse(headers));
+      }
+
+      // HEAD failed (404, 405, 403, etc.) — try GET fallback
+      logger.info('HEAD returned ' + statusCode + ', trying GET fallback', { url: currentUrl });
+
+      const getResult = await makeRequest(currentUrl, 'GET', {
+        'Range': 'bytes=0-1023',  // Only fetch first 1 KB
+      });
+
+      if (!getResult.ok) return resolve(getResult);
+
+      if ([301, 302, 303, 307, 308].includes(getResult.statusCode)) {
+        const loc = getResult.headers.location;
+        if (!loc) return resolve({ ok: false, reason: 'Redirect without Location header.' });
+        const nextUrl = new URL(loc, currentUrl).href;
+        let np; try { np = new URL(nextUrl); } catch {
+          return resolve({ ok: false, reason: 'Invalid redirect URL.' });
+        }
+        const dc = await validateDomain(np);
+        if (!dc.ok) return resolve({ ok: false, reason: 'Redirect target is not allowed.' });
+
+        const getResult2 = await makeRequest(nextUrl, 'GET', { 'Range': 'bytes=0-1023' });
+        if (!getResult2.ok) return resolve(getResult2);
+        if (getResult2.statusCode >= 200 && getResult2.statusCode < 400) {
+          return resolve(validateResponse(getResult2.headers));
+        }
+        return resolve({ ok: false, reason: 'Server returned status ' + getResult2.statusCode + '.' });
+      }
+
+      if (getResult.statusCode >= 200 && getResult.statusCode < 400) {
+        return resolve(validateResponse(getResult.headers));
+      }
+
+      return resolve({
+        ok: false,
+        reason: 'Server returned status ' + getResult.statusCode + ' for both HEAD and GET requests.',
+      });
+    }
+  });
+}
+
+// Shared response header validator (used by both HEAD and GET paths)
+function validateResponse(headers) {
+  const rawCT = (headers['content-type'] || '').toLowerCase();
+  const contentType = rawCT.split(';')[0].trim();
+
+  // Block explicit bad types
+  for (const blocked of config.BLOCKED_CONTENT_TYPES) {
+    if (contentType.startsWith(blocked)) {
+      return {
+        ok: false,
+        reason: 'Content-Type "' + contentType + '" is not a video stream.',
+      };
+    }
+  }
+
+  // Must match at least one allowed type
+  const isAllowed = config.ALLOWED_CONTENT_TYPES.some(
+    (allowed) => contentType.startsWith(allowed)
+  );
+
+  // For .m3u8 some servers return text/plain or octet-stream
+  if (!isAllowed && contentType !== 'text/plain' && contentType !== 'application/octet-stream' && contentType !== 'binary/octet-stream' && contentType !== '') {
+    return {
+      ok: false,
+      reason: 'Content-Type "' + contentType + '" is not in the allowed list.',
+    };
+  }
+
+  // File-size check
+  const contentLength = parseInt(headers['content-length'], 10);
+  if (!isNaN(contentLength) && contentLength > config.MAX_FILE_SIZE_BYTES) {
+    return {
+      ok: false,
+      reason: 'File too large. Maximum allowed is ' + (config.MAX_FILE_SIZE_BYTES / 1024 / 1024) + ' MB.',
+    };
+  }
+
+  return { ok: true, contentType, contentLength };
 }
 
 // ─── Orchestrator — run all checks in sequence ──────────────

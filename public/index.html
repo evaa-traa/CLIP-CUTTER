@@ -786,33 +786,43 @@
     });
 
     // ── Live interceptor script ───────────────────────────────
-    // Monkey-patches fetch + XHR to catch video URLs in real-time.
-    // Also watches for dynamically added <video> elements.
+    // Catches video URLs via multiple techniques:
+    //   1. Monkey-patches fetch + XHR
+    //   2. Patches HTMLMediaElement.src setter
+    //   3. Patches Hls.loadSource() if hls.js is loaded
+    //   4. MutationObserver for new <video>/<source> elements
+    //   5. Periodic performance entry scanning (catches P2P loaders)
+    //   6. Tries to run inside iframes too
     // Runs entirely in the user's browser. Zero backend calls.
     const finderScript = `(function(){
   if(window.__vidInterceptorActive){console.log('Already active!');return}
   window.__vidInterceptorActive=true;
-  var exts=['.m3u8','.mp4','.webm','.ts','.mpd'];
+  var exts=['.m3u8','.mp4','.webm','.mpd'];
   var found=[];
   var reported=new Set();
+  var scanCount=0;
 
   function isVid(url){
+    if(!url||typeof url!=='string')return false;
     try{
-      var u=new URL(url,location.href).pathname.toLowerCase();
-      for(var i=0;i<exts.length;i++){if(u.includes(exts[i]))return true}
+      var p=new URL(url,location.href).pathname.toLowerCase();
+      for(var i=0;i<exts.length;i++){if(p.includes(exts[i]))return true}
     }catch(e){}
+    var lower=url.toLowerCase();
+    for(var i=0;i<exts.length;i++){if(lower.includes(exts[i]))return true}
     return false;
   }
 
   function report(url,source){
+    if(!url||typeof url!=='string')return;
     try{url=new URL(url,location.href).href}catch(e){return}
     if(reported.has(url))return;
+    if(url.match(/\\.ts(\\?|$)/i)&&!url.match(/\\.m3u8/i))return;
     reported.add(url);
     found.push(url);
     console.log('%c🎬 VIDEO URL FOUND ('+source+'):%c\\n'+url,
       'color:#22c55e;font-weight:bold;font-size:14px',
       'color:#8b5cf6;font-size:12px');
-    // Auto-popup after short delay to batch multiple finds
     clearTimeout(window.__vidPopupTimer);
     window.__vidPopupTimer=setTimeout(function(){
       var msg='Found '+found.length+' video URL(s):\\n\\n';
@@ -822,7 +832,7 @@
         try{navigator.clipboard.writeText(found[0]).then(function(){alert('Copied!')})}
         catch(e){prompt('Copy this URL:',found[0])}
       }
-    },1500);
+    },2000);
   }
 
   // 1. Monkey-patch fetch
@@ -841,41 +851,77 @@
     return origOpen.apply(this,arguments);
   };
 
-  // 3. Watch for new <video>/<source> elements (MutationObserver)
-  var obs=new MutationObserver(function(muts){
-    muts.forEach(function(m){
-      m.addedNodes.forEach(function(n){
-        if(!n.querySelectorAll)return;
-        n.querySelectorAll('video,source,video source').forEach(function(el){
-          if(el.src&&isVid(el.src))report(el.src,'DOM');
-          if(el.currentSrc&&isVid(el.currentSrc))report(el.currentSrc,'DOM');
-        });
-        if(n.tagName==='VIDEO'||n.tagName==='SOURCE'){
-          if(n.src&&isVid(n.src))report(n.src,'DOM');
-        }
+  // 3. Patch HTMLMediaElement.src setter
+  try{
+    var origSrcDesc=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'src');
+    if(origSrcDesc&&origSrcDesc.set){
+      Object.defineProperty(HTMLMediaElement.prototype,'src',{
+        set:function(val){if(isVid(val))report(val,'mediaSrc');origSrcDesc.set.call(this,val)},
+        get:origSrcDesc.get, configurable:true
       });
-    });
+    }
+  }catch(e){}
+
+  // 4. Patch hls.js loadSource if it exists
+  function patchHls(H){
+    if(!H||!H.prototype||H.prototype.__patched)return;
+    H.prototype.__patched=true;
+    var origLoad=H.prototype.loadSource;
+    H.prototype.loadSource=function(src){if(isVid(src))report(src,'hls.js');return origLoad.apply(this,arguments)};
+    console.log('%c✓ hls.js patched','color:#22c55e');
+  }
+  if(window.Hls)patchHls(window.Hls);
+  try{var _H=window.Hls;Object.defineProperty(window,'Hls',{get:function(){return _H},set:function(v){_H=v;if(v)patchHls(v)},configurable:true})}catch(e){}
+
+  // 5. MutationObserver for new video/source elements
+  var obs=new MutationObserver(function(muts){
+    muts.forEach(function(m){m.addedNodes.forEach(function(n){
+      if(!n.querySelectorAll)return;
+      n.querySelectorAll('video,source').forEach(function(el){
+        if(el.src&&isVid(el.src))report(el.src,'DOM');
+        if(el.currentSrc&&isVid(el.currentSrc))report(el.currentSrc,'DOM');
+      });
+    })});
   });
   obs.observe(document.documentElement,{childList:true,subtree:true});
 
-  // 4. Also do a static scan of what's already on the page
+  // 6. Periodic performance entry + DOM + iframe scan (catches P2P loaders)
+  var perfInterval=setInterval(function(){
+    scanCount++;
+    if(window.performance&&performance.getEntriesByType){
+      performance.getEntriesByType('resource').forEach(function(r){if(isVid(r.name))report(r.name,'network')});
+    }
+    document.querySelectorAll('video').forEach(function(v){
+      if(v.src&&isVid(v.src))report(v.src,'poll');
+      if(v.currentSrc&&isVid(v.currentSrc))report(v.currentSrc,'poll');
+    });
+    try{document.querySelectorAll('iframe').forEach(function(f){
+      try{
+        var doc=f.contentDocument||f.contentWindow.document;
+        doc.querySelectorAll('video,source').forEach(function(el){
+          if(el.src&&isVid(el.src))report(el.src,'iframe');
+          if(el.currentSrc&&isVid(el.currentSrc))report(el.currentSrc,'iframe');
+        });
+        if(f.contentWindow.performance&&f.contentWindow.performance.getEntriesByType){
+          f.contentWindow.performance.getEntriesByType('resource').forEach(function(r){if(isVid(r.name))report(r.name,'iframe-net')});
+        }
+      }catch(e){}
+    })}catch(e){}
+    if(scanCount>=30){clearInterval(perfInterval);if(found.length===0)console.log('%cNo video URLs found after 60s. Try the Network tab method instead.','color:#f59e0b;font-size:12px')}
+  },2000);
+
+  // Initial scan
+  if(window.performance&&performance.getEntriesByType){
+    performance.getEntriesByType('resource').forEach(function(r){if(isVid(r.name))report(r.name,'initial')});
+  }
   document.querySelectorAll('video').forEach(function(v){
     if(v.src&&isVid(v.src))report(v.src,'existing');
     if(v.currentSrc&&isVid(v.currentSrc))report(v.currentSrc,'existing');
-    v.querySelectorAll('source').forEach(function(s){
-      if(s.src&&isVid(s.src))report(s.src,'existing');
-    });
   });
-  if(window.performance&&performance.getEntriesByType){
-    performance.getEntriesByType('resource').forEach(function(r){
-      if(isVid(r.name))report(r.name,'perf');
-    });
-  }
 
-  console.log('%c🎬 Video interceptor active!%c\\nNow click play on the video. URLs will appear here automatically.',
+  console.log('%c\ud83c\udfac Video interceptor active!%c\\nMonitoring: fetch, XHR, hls.js, MediaElement, DOM, network\\nClick play now. URLs appear here automatically. (60s timeout)',
     'color:#8b5cf6;font-weight:bold;font-size:16px',
     'color:#888;font-size:12px');
-  if(found.length===0)console.log('Waiting for video requests...');
 })()`;
 
     const copyBtn = document.getElementById('copyScriptBtn');
